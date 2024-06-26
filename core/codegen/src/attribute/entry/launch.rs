@@ -3,7 +3,8 @@ use devise::ext::SpanDiagnosticExt;
 use proc_macro2::{TokenStream, Span};
 
 use super::EntryAttr;
-use crate::exports::mixed;
+use crate::attribute::suppress::Lint;
+use crate::exports::{mixed, _error, _ExitCode};
 
 /// `#[rocket::launch]`: generates a `main` function that calls the attributed
 /// function to generate a `Rocket` instance. Then calls `.launch()` on the
@@ -66,8 +67,7 @@ impl EntryAttr for Launch {
         // Always infer the type as `Rocket<Build>`.
         if let syn::ReturnType::Type(_, ref mut ty) = &mut f.sig.output {
             if let syn::Type::Infer(_) = &mut **ty {
-                let new = quote_spanned!(ty.span() => ::rocket::Rocket<::rocket::Build>);
-                *ty = syn::parse2(new).expect("path is type");
+                *ty = syn::parse_quote_spanned!(ty.span() => ::rocket::Rocket<::rocket::Build>);
             }
         }
 
@@ -90,27 +90,30 @@ impl EntryAttr for Launch {
             None => quote_spanned!(ty.span() => #rocket.launch()),
         };
 
-        if f.sig.asyncness.is_none() {
+        let lint = Lint::SyncSpawn;
+        if f.sig.asyncness.is_none() && lint.enabled(f.sig.asyncness.span()) {
             if let Some(call) = likely_spawns(f) {
                 call.span()
                     .warning("task is being spawned outside an async context")
                     .span_help(f.sig.span(), "declare this function as `async fn` \
                                               to require async execution")
                     .span_note(Span::call_site(), "`#[launch]` call is here")
+                    .note(lint.how_to_suppress())
                     .emit_as_expr_tokens();
             }
         }
 
         let (vis, mut sig) = (&f.vis, f.sig.clone());
-        sig.ident = syn::Ident::new("main", sig.ident.span());
-        sig.output = syn::ReturnType::Default;
+        sig.ident = syn::Ident::new("main", f.sig.ident.span());
+        let ret_ty = _ExitCode.respanned(ty.span());
+        sig.output = syn::parse_quote_spanned!(ty.span() => -> #ret_ty);
         sig.asyncness = None;
 
         Ok(quote_spanned!(block.span() =>
             #[allow(dead_code)] #f
 
             #vis #sig {
-                let _ = ::rocket::async_main(#launch);
+                #_error::Error::report(::rocket::async_main(#launch))
             }
         ))
     }

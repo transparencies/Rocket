@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use std::error::Error;
 
-use crate::{Engines, TemplateInfo};
+use crate::engine::Engines;
+use crate::template::TemplateInfo;
 
 use rocket::http::ContentType;
 use normpath::PathExt;
@@ -48,16 +49,17 @@ impl Context {
                     Ok(_) | Err(_) => continue,
                 };
 
-                let (name, data_type_str) = split_path(&root, entry.path());
-                if let Some(info) = templates.get(&*name) {
-                    warn_!("Template name '{}' does not have a unique source.", name);
-                    match info.path {
-                        Some(ref path) => info_!("Existing path: {:?}", path),
-                        None => info_!("Existing Content-Type: {}", info.data_type),
-                    }
+                let (template, data_type_str) = split_path(&root, entry.path());
+                if let Some(info) = templates.get(&*template) {
+                    warn!(
+                        %template,
+                        first_path = %entry.path().display(),
+                        second_path = info.path.as_ref().map(|p| display(p.display())),
+                        data_type = %info.data_type,
+                        "Template name '{template}' can refer to multiple templates.\n\
+                         First path will be used. Second path is ignored."
+                    );
 
-                    info_!("Additional path: {:?}", entry.path());
-                    warn_!("Keeping existing template '{}'.", name);
                     continue;
                 }
 
@@ -65,7 +67,7 @@ impl Context {
                     .and_then(|ext| ContentType::from_extension(ext))
                     .unwrap_or(ContentType::Text);
 
-                templates.insert(name, TemplateInfo {
+                templates.insert(template, TemplateInfo {
                     path: Some(entry.into_path()),
                     engine_ext: ext,
                     data_type,
@@ -74,9 +76,8 @@ impl Context {
         }
 
         let mut engines = Engines::init(&templates)?;
-        if let Err(e) = callback(&mut engines) {
-            error_!("Template customization callback failed.");
-            error_!("{}", e);
+        if let Err(reason) = callback(&mut engines) {
+            error!(%reason, "template customization callback failed");
             return None;
         }
 
@@ -99,7 +100,7 @@ impl Context {
 #[cfg(not(debug_assertions))]
 mod manager {
     use std::ops::Deref;
-    use crate::Context;
+    use super::Context;
 
     /// Wraps a Context. With `cfg(debug_assertions)` active, this structure
     /// additionally provides a method to reload the context at runtime.
@@ -150,9 +151,8 @@ mod manager {
             let watcher = match watcher {
                 Ok(watcher) => Some((watcher, Mutex::new(rx))),
                 Err(e) => {
-                    warn!("Failed to enable live template reloading: {}", e);
-                    debug_!("Reload error: {:?}", e);
-                    warn_!("Live template reloading is unavailable.");
+                    warn!("live template reloading initialization failed: {e}\n\
+                        live template reloading is unavailable");
                     None
                 }
             };
@@ -181,13 +181,13 @@ mod manager {
                 .map(|(_, rx)| rx.lock().expect("fsevents lock").try_iter().count() > 0);
 
             if let Some(true) = templates_changes {
-                info_!("Change detected: reloading templates.");
+                debug!("template change detected: reloading templates");
                 let root = self.context().root.clone();
                 if let Some(new_ctxt) = Context::initialize(&root, callback) {
                     *self.context_mut() = new_ctxt;
                 } else {
-                    warn_!("An error occurred while reloading templates.");
-                    warn_!("Existing templates will remain active.");
+                    warn!("error while reloading template\n\
+                        existing templates will remain active.")
                 };
             }
         }

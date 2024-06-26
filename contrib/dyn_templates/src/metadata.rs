@@ -1,10 +1,10 @@
+use std::fmt;
 use std::borrow::Cow;
 
 use rocket::{Request, Rocket, Ignite, Sentinel};
 use rocket::http::{Status, ContentType};
 use rocket::request::{self, FromRequest};
 use rocket::serde::Serialize;
-use rocket::yansi::Paint;
 
 use crate::{Template, context::ContextManager};
 
@@ -124,14 +124,22 @@ impl Metadata<'_> {
     }
 }
 
+impl fmt::Debug for Metadata<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map()
+            .entries(&self.0.context().templates)
+            .finish()
+    }
+}
+
 impl Sentinel for Metadata<'_> {
     fn abort(rocket: &Rocket<Ignite>) -> bool {
         if rocket.state::<ContextManager>().is_none() {
-            let md = "Metadata".primary().bold();
-            let fairing = "Template::fairing()".primary().bold();
-            error!("requested `{}` guard without attaching `{}`.", md, fairing);
-            info_!("To use or query templates, you must attach `{}`.", fairing);
-            info_!("See the `Template` documentation for more information.");
+            error!(
+                "uninitialized template context: missing `Template::fairing()`.\n\
+                To use templates, you must attach `Template::fairing()`."
+            );
+
             return true;
         }
 
@@ -150,9 +158,11 @@ impl<'r> FromRequest<'r> for Metadata<'r> {
         request.rocket().state::<ContextManager>()
             .map(|cm| request::Outcome::Success(Metadata(cm)))
             .unwrap_or_else(|| {
-                error_!("Uninitialized template context: missing fairing.");
-                info_!("To use templates, you must attach `Template::fairing()`.");
-                info_!("See the `Template` documentation for more information.");
+                error!(
+                    "uninitialized template context: missing `Template::fairing()`.\n\
+                    To use templates, you must attach `Template::fairing()`."
+                );
+
                 request::Outcome::Error((Status::InternalServerError, ()))
             })
     }

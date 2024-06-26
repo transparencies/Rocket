@@ -65,19 +65,8 @@ fn insecure_cookies() {
     assert_eq!(c4.secure(), None);
 }
 
-#[test]
-fn hello_world() {
-    use rocket::listener::DefaultListener;
-    use rocket::config::{Config, SecretKey};
-
-    let profiles = [
-        "rsa_sha256",
-        "ecdsa_nistp256_sha256_pkcs8",
-        "ecdsa_nistp384_sha384_pkcs8",
-        "ecdsa_nistp256_sha256_sec1",
-        "ecdsa_nistp384_sha384_sec1",
-        "ed25519",
-    ];
+fn validate_profiles(profiles: &[&str]) {
+    use rocket::config::{Config, TlsConfig, SecretKey};
 
     for profile in profiles {
         let config = Config {
@@ -86,13 +75,32 @@ fn hello_world() {
         };
 
         let figment = Config::figment().merge(config).select(profile);
-        let client = Client::tracked_secure(super::rocket().configure(figment)).unwrap();
+        let client = Client::tracked_secure(super::rocket().reconfigure(figment)).unwrap();
         let response = client.get("/").dispatch();
         assert_eq!(response.into_string().unwrap(), "Hello, world!");
 
         let figment = client.rocket().figment();
-        let listener: DefaultListener = figment.extract().unwrap();
-        assert_eq!(figment.profile(), profile);
-        listener.tls.as_ref().unwrap().validate().expect("valid TLS config");
+        let config: TlsConfig = figment.extract_inner("tls").unwrap();
+        config.validate().expect("valid TLS config");
+    }
+}
+
+#[test]
+fn validate_tls_profiles() {
+    const DEFAULT_PROFILES: &[&str] = &[
+        "rsa_sha256",
+        "ecdsa_nistp256_sha256_pkcs8",
+        "ecdsa_nistp384_sha384_pkcs8",
+        "ecdsa_nistp256_sha256_sec1",
+        "ecdsa_nistp384_sha384_sec1",
+        "ed25519",
+    ];
+
+    validate_profiles(DEFAULT_PROFILES);
+
+    #[cfg(unix)] {
+        rustls::crypto::aws_lc_rs::default_provider().install_default().unwrap();
+        validate_profiles(DEFAULT_PROFILES);
+        validate_profiles(&["ecdsa_nistp521_sha512_pkcs8"]);
     }
 }

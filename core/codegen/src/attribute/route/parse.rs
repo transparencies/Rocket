@@ -3,6 +3,7 @@ use devise::ext::{SpanDiagnosticExt, TypeExt};
 use indexmap::{IndexSet, IndexMap};
 use proc_macro2::Span;
 
+use crate::attribute::suppress::Lint;
 use crate::proc_macro_ext::Diagnostics;
 use crate::http_codegen::{Method, MediaType};
 use crate::attribute::param::{Parameter, Dynamic, Guard};
@@ -127,12 +128,20 @@ impl Route {
 
         // Emit a warning if a `data` param was supplied for non-payload methods.
         if let Some(ref data) = attr.data {
-            if !attr.method.0.supports_payload() {
-                let msg = format!("'{}' does not typically support payloads", attr.method.0);
-                // FIXME(diag: warning)
-                data.full_span.warning("`data` used with non-payload-supporting method")
-                    .span_note(attr.method.span, msg)
-                    .emit_as_item_tokens();
+            let lint = Lint::DubiousPayload;
+            match attr.method.0.allows_request_body() {
+                None if lint.enabled(handler.span()) => {
+                    data.full_span.warning("`data` used with non-payload-supporting method")
+                        .note(format!("'{}' does not typically support payloads", attr.method.0))
+                        .note(lint.how_to_suppress())
+                        .emit_as_item_tokens();
+                }
+                Some(false) => {
+                    diags.push(data.full_span
+                        .error("`data` cannot be used on this route")
+                        .span_note(attr.method.span, "method does not support request payloads"))
+                }
+                _ => { /* okay */ },
             }
         }
 
